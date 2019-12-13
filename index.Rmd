@@ -1,0 +1,641 @@
+---
+title: "Mixed effects models in R"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+  pdf_document: default
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dpi=300)
+```
+
+**Sean Trott**  
+*November 18, 2019*
+
+# High-level goals
+
+This tutorial is intended as an accompaniment to my 11/18/2019 workshop, "Mixed effects models in R". The goals of the lecture-portion of that workshop (and thus this tutorial) are to address the following questions:  
+
+1) Why build mixed effects models?  
+2) How can you decide what to model as a **fixed** vs. a **random** effect? And more broadly, which random effects do you need to account for?  
+3) What should your data look like? How do you actually run a model in `lme4`?  
+4) How do you interpret and report the results? 
+
+The examples given will likely focus on *linear* models in particular (where the critical contrast is between OLS regression and linear mixed models), but where possible I will describe extensions to other models^[Note that `glmer` is the command to fit a generalized linear mixed model, which allows you to fit gaussian models (though gaussian family models are now deprecated in favor of just using `lmer`) and also binomial, poisson, and more.]. 
+
+In writing this tutorial, I drew heavily from a number of existing tutorials and resources. I strongly endorse all of them:
+
+* [Bates et al (2014): Fitting linear mixed-effects models using lme4](https://arxiv.org/pdf/1406.5823.pdf)  
+* [Winter (2013): Linear models and linear mixed effects models in R with linguistic applications](https://arxiv.org/ftp/arxiv/papers/1308/1308.5499.pdf)  
+* [Barr et al (2013): Random effects structure for confirmatory hypothesis testing: Keep it maximal](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3881361/)
+* [Bates et al (2015): Parsimonious mixed models](https://arxiv.org/pdf/1506.04967.pdf)  
+* [Piccinini: linear mixed effects models in R](https://pagepiccinini.com/r-course/lesson-6-part-1-linear-mixed-effects-models/)  
+* [Clark: shrinkage in mixed effect models](https://m-clark.github.io/posts/2019-05-14-shrinkage-in-mixed-models/)
+
+Also, [this website](http://mfviz.com/hierarchical-models/) has beautiful visualizations illustrating the concept of nested structure in datasets.
+
+# Load libraries
+
+First, logistics. We'll be working with two main libraries: `library(tidyverse)` and `library(lme4)`. If you don't have them installed already, use `install.packages("tidyverse")` and `install.packages("lme4")` to install them.
+
+```{r include=FALSE}
+library(tidyverse)
+library(lme4)
+```
+
+# Brief (and likely unnecessary) introduction
+
+The point of building statistical models is to quantify relationships between two or more variables. For example, how **correlated** are `A` and `B`? 
+
+This quantification is done in the service of some theoretical goal, e.g., to adjudicate between competing hypotheses. Thus, researchers often want to know some second-order information about this relationship, such as how **unexpected** it is. In the traditional approach of [null hypothesis significance testing](https://en.wikipedia.org/wiki/Statistical_hypothesis_testing), this amounts to asking about the probability of your data under the null hypothesis, e.g., `p(d|h)`: a *p-value*^[This is *not* the probability that the null hypothesis is true, nor is it the probability that your effect will replicate.]. 
+
+Another popular approach is to use some kind of **goodness of fit** measure, i.e., how successfully does your model fit the data? Using a [model selection](https://en.wikipedia.org/wiki/Model_selection) procedure, various models can be fit to the data and selected on the basis of their explanatory power (using some heuristic to enforce model parsimony). This is especially useful when examining complex, multivariate relationships because it allows researchers to ask whether their variable of interest explains independent sources of variance from other variables, i.e., how much they improve a model without that variable. The goal of a model selection procedure is to settle on the simplest model that best explains your data^[One useful way to think about a statistical model is as a *description* of a phenomenon. There are many ways to describe the same phenomenon, and these distinct descriptions (or *explanations*) involve different factors.]. 
+
+
+# Why use mixed models?
+
+All statistical methods have a set of assumptions baked into them. 
+
+One assumption shared by many statistical methods is that each data point is [**independent**](https://en.wikipedia.org/wiki/Independence_(probability_theory)#Independent_random_variables), i.e., not dependent on or related to any other observation. For example, if you flip a coin, the probability of getting heads should be independent of other flips; in our theoretical model of coin-flipping, we assume that the generative process underlying a given coin flip is independent of the process underlying other coin flips. Similarly, a procedure like OLS regression assumes that each data point was generated by an independent causal process, and therefore, that your data points are all independent. 
+
+This is a useful assumption, and in many cases, is perfectly acceptable.
+
+## When the independence assumption is met
+
+When is independence fair to assume? Broadly speaking: your data points are independent if you've ruled out the possibility of some nested causal process generating multiple observations in your dataset. This causal process could be a *person* (e.g., the same participant contributing multiple data points), an *item* (e.g., the same item being answered by different participants, where the item itself isn't your variable of interest), or in certain contexts, even an *institution* (e.g., multiple participants coming from the same school). 
+
+**Example 1**: You want to know whether a new pharmaceutical drug increases self-reported happiness. You randomly assign people to take the drug vs. some placebo, and 1 month later, each participant answers a single question (e.g., "How happy are you (1-7)?"). You then use a t-test or OLS regression to compare the distribution of people assigned to the treatment group to the distribution of people assigned to the placebo group. Here, each participant contributed exactly 1 data point, so it's pretty reasonable to assume each data point is independent.
+
+**Example 2**: You want to know whether people respond differently to one kind of metaphor than another. You assign 200 subjects to 1 of two conditions (`A` vs. `B`). Each subject is exposed to exactly 1 of 2 possible items (`A` vs. `B`). In other words, it's a between-subjects design with only one item. Again, it seems like these are independent observations; the only similarities across observations are exactly the ones you're interested in (i.e., experimental condition). Thus, you can run a t-test or OLS regression to ask whether responses are different in the `A` vs. `B` condition. 
+
+Examples 1-2 seem to meet the independence assumption^[Of course, one can imagine circumstances under which we'd be worried that this assumption is violated; e.g., maybe the participants assigned to take the drug happened to come from one part of the country, and the participants assigned to take the placebo happened to come from another. If your assignment procedure is truly randomized, this shouldn't be the case, but nonetheless: it's always important to watch out for signs of non-independence.]. 
+
+When this assumption is met, you can analyze your data with something like OLS regression; an example using simulated data is shown below. (Note that for the remainder of the tutorial, analyses will be discussed from the perspective of regression; [this](https://lindeloev.github.io/tests-as-linear/) is a useful resource explaining how many common statistical tests actually reduce to linear regression.) 
+
+### Simulation and analysis
+
+#### Simulate and visualize the data
+
+Let's simulate some data. Just to make it obvious, we'll start out by simulating two normal distributions with different means and identical standard deviations. As depicted below, these groups will have some overlap but still look pretty different.
+
+```{r}
+### Set random seed
+set.seed(42)
+
+### Illustration of two different distributions, A vs. B
+
+A = rnorm(100, mean = 725, sd = 15)
+B = rnorm(100, mean = 705, sd = 15)
+
+df = data.frame(A = A,
+           B = B) %>%
+  gather() %>%
+  mutate(group = key)
+
+df %>%
+  ggplot(aes(x = value,
+             fill = group)) +
+  geom_density(alpha = .6) +
+  labs(title = "Group A vs. Group B") +
+  theme_minimal()
+```
+
+
+#### Detour: explanation of OLS
+
+These two groups look pretty different. One way to quantify their difference is to use [ordinary least squares regression](https://en.wikipedia.org/wiki/Ordinary_least_squares), predicting `value` from `group`, e.g., `value ~ group`. 
+
+Recall that the goal of OLS is to **learn a set of coefficients for your predictors that minimize the difference between the predicted values of your model and the observed values**. Abstractly, the formula for linear regression looks like this:
+
+$Y \sim X + \epsilon$
+
+Where $Y$ represents our dependent variable, $X$ represents our predictor (or **fixed effect**), and $\epsilon$ represents an error term. Here, "error" broadly encompasses everything that the model doesn't "know" about where variance in $Y$ might come from (i.e., variance not correlated with variance in $X$); the tighter the relationship between $X$ and $Y$, the smaller this error term will be.
+
+With OLS, we want to estimate coefficients for our regressors. These coefficients are sometimes called **slopes**, because they refer to the slope of the line that best fits $X$ to $Y$. They're usually represented by the $\beta$ symbol:
+
+$Y \sim \beta_{0} + X_{1}\beta_{1} + \epsilon$
+
+Here, $\beta_{0}$ refers to the **intercept**, and $\beta_{1}$ refers to the **slope** for the $X_{1}$ predictor. 
+
+With continuous data, $\beta_{0}$ means the value of $Y$ when $X$ is 0. $\beta_{1}$ means: with every 1-unit increase in $X$, change $Y$ by $\beta_{1}$. 
+
+Categorical data is conceptually similar. R chooses one of the levels of a categorical factor (e.g., group `A`) as the intercept, so $\beta_{0}$ refers to the mean value of $Y$ in that group. $\beta_{1}$ is thus the average difference between the two groups, which can be expressed as the slope of the line between their means. For example, if the mean value of $Y$ in group `A` is 40 and the mean value of $Y$ in group `B` is 50, then $\beta_{0}$ = 40, and $\beta_{1}$ = 10. 
+
+#### Model the data
+
+Back to our simulated data. We can apply these principles to modeling the potential differences between our two groups.
+
+Let's run a linear model:
+
+```{r}
+simple_model = lm(data = df,
+           value ~ group)
+
+summary(simple_model)
+```
+
+There's a lot of results here, but for our purposes, we're primarily interested in the coefficient on our fixed effect, `group`. As noted above, R uses reference coding, which means that one level of a categorical variable is chosen as the **intercept**; thus, if `A` is chosen as our intercept, then the intercept value will correspond to the mean of that distribution. We can verify this ourselves:
+
+```{r}
+simple_model$coefficients["(Intercept)"]
+mean(A)
+```
+
+If we look below the intercept value, we see the coefficient for our fixed effect, `group`. Here, it should say something like `groupB`. The coefficient should thus be interpreted *in contrast* (or *in reference*) to the intercept value. 
+
+```{r}
+coef_value = simple_model$coefficients["groupB"]
+round(coef_value, 2)
+```
+
+In other words: according to our model, observations in group `B` are on average `r round(coef_value, 2)` units lower than observations in group `A`. Again, we can verify this ourselves by calculating the difference between the means of these groups:
+
+```{r}
+round(mean(B) - mean(A), 2)
+```
+
+We can also express this visually. Below, we see that the mean (and median) of group A is equivalent to the **intercept**, i.e., $\beta_{0}$, and the best-fit line (i.e., $\beta_{1}$) connects this intercept to the mean of group B.
+
+```{r}
+df %>%
+  ggplot() +
+  geom_boxplot(aes(x = group,
+                    y = value)) +
+  geom_point(aes(x = as.integer(factor(group)),
+                 y = value)) +
+  geom_smooth(aes(x = as.integer(factor(group)),
+                 y = value), method = "lm") +
+  labs(title = "Value across groups A and B") +
+  theme_minimal()
+```
+
+
+## When independence is not met
+
+Unfortunately, this **independence assumption** isn't always met. Most people conducting psychology experiments collect more than one data point from each participant^[In case you're wondering, the same problem arises in observational analyses, even when you only have one data point per *person*. The nesting just occurs at a different level. For example, let's say you're comparing test scores on the SAT across a bunch of individuals. There's likely implicit nested structure in this dataset, such as the `School District`, `School`, or even `City`. You'll need to account for this nested structure in your model specifications.] (this is inevitable in within-subjects designs). Furthermore, most of these experiments probably reuse the same set of items across participants; that is, the same stimulus is likely presented and responded to by multiple participants. 
+
+This is problematic for traditional OLS approaches, regardless of what your dependent variable (DV) is:
+
+- Reaction time (RT)  
+- Yes/No responses
+- Gaze fixations  
+- EEG amplitude  
+- Pretty much any other DV you might be interested in
+
+For example, different subjects likely differ substantially in their reaction time; similarly, different subjects may have different biases towards responding "yes" or "no" to your items. Let's label this problem **nested variability in the dependent variable**. Even worse, different subjects may differ in the effect of your experimental manipulation on their response (or RT, etc.). That is, some subjects may show a stronger effect than others. Let's call this problem **nested variability in the effect of interest**. These two problems correspond, roughly, to two solutions offered by mixed models: **random intercepts** and **random slopes**. I'll discuss what these terms mean a bit later in the tutorial.
+
+### Example: violating the independence assumption
+
+For a quick example, let's load a dataset that comes with the `lme4` package (see also [Bates et al (2014)](https://arxiv.org/pdf/1406.5823.pdf) for a more detailed walkthrough of the dataset).
+
+This dataset, called `sleepstudy`, contains data about the average reaction time (`Reaction`, measured in ms) per day (`Days`) of subjects in a sleep deprivation study. There are `r length(unique(sleepstudy$Subject))` subjects total, with a total of `r nrow(sleepstudy)` observations; in other words, each subject is responsible for 10 observations in the dataset.
+
+#### Naive analysis 
+
+Let's first pretend we didn't know anything about this source of non-independence in the dataset. Naively, we could plot (and analyze) the data as a set of `r nrow(sleepstudy)` independent observations.
+
+
+```{r}
+sleepstudy %>%
+  ggplot(aes(x = Days,
+             y = Reaction)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "RT over successive days") +
+  theme_minimal()
+```
+
+Looks like a positive relationship between `Days` and `Reaction time`, as we'd expect: **more sleep deprivation leads to slower reaction times**. We can use OLS regression to model this relationship:
+
+```{r}
+naive_model = lm(data = sleepstudy,
+           Reaction ~ Days)
+summary(naive_model)
+```
+
+
+The model gives us an intercept of `r round(naive_model$coefficients["(Intercept)"], 2)`; this is the estimated RT when $X$=0. The coefficient for `Days` is `r round(naive_model$coefficients["Days"], 2)`; this means that for each continued day of sleep deprivation, RT increases by an average of `Days` is `r round(naive_model$coefficients["Days"], 2)`.
+
+But now we recall that there are only `r length(unique(sleepstudy$Subject))` subjects accounting for `r nrow(sleepstudy)` observations. There must be *non-independence* in our dataset. That is, different subjects probably have variability in their overall reaction time, and might even show variability in how resilient they are to sleep deprivation. As shown below, subjects *do* appear to vary considerably in their overall reaction time (and also in the variance in each of their distributions of reaction times).
+
+```{r}
+sleepstudy %>%
+  ggplot(aes(x = Subject,
+             y = Reaction)) +
+  geom_boxplot() +
+  labs(title = "Subject-level variance in RT") +
+  theme_minimal()
+```
+
+
+**Mixed effect models** are one solution to this problem of non-independence^[Another historically popular solution has been to used **repeated-measures ANOVAs**. One advantage of mixed models is that they allow crossed random effects, e.g., modeling random effects for subjects, items, group, and more in the same model. Repeated-measures ANOVAs aren't so flexible, requiring you to build separate models partitioning out subject-level or item-level variance, then making inferences across those models.].
+
+# Mixed models: a walkthrough 
+
+The `sleepstudy` dataset is an example of data with **nested structure**. In this case, nested structure manifests as multiple observations coming from the same subject. We can control for this nested structure in two ways:
+
+1) **Random intercepts**: Control for subject-level variance in $Y$, i.e., $\beta_{0}$.  
+2) **Random slopes**: Control for subject-level variance in the effect of $X$ on $Y$, i.e., $\beta_{1}$.
+
+Below I'll walk through both in turn.
+
+## Random intercepts: accounting for nested variance in $Y$
+
+Different people probably differ in their average reaction time, *regardless* of how sleep-deprived they are. Rather than ignoring this individual variation, we can actually incorporate it into our model as something called a **random effect**^[You might wonder: why not just include subject-level variance as a fixed effect? There's always some debate about which variables to include as **fixed** vs. **random** effects in your model, and the answer will depend multiple things. For example, what sorts of things are you actually interested in modeling theoretically? And what sorts of things do you have reason to believe vary systematically with $Y$ as opposed to randomly? I'll go into more detail on this later in the tutorial, but the quick answer is that adding something as a random effect means that its values (e.g., its intercept) are subject to **partial pooling**, which is essentially a form of regularization. This places useful constraints on the range of values that these intercepts and slopes can take.] Recall that the model from earlier looks like this:
+
+`Reaction ~ Days`
+
+Using mixed models, we can augment this model with a **random intercept** for each subject, which basically means: in addition to calculating the line of best-fit between `Days` and `Reaction`, also calculate the mean `Reaction` for each subject, rather than assuming that subjects don't vary at all. The R syntax to do this is as follows:
+
+`Reaction ~ Days + (1 | Subject)`
+
+We've now accounted for subject-level variance in $Y$. 
+
+Often, experiments will involve other kinds of nested structure, such as **item-level variance**. Our current dataset averages across all observations for a subject in a given day, so it doesn't include any fine-grained information about items. But if it did (e.g., `Item`), and these items exhibited nested structure, we could model it as follows:
+
+`Reaction ~ Days + (1 | Subject) + (1 | Item)`
+
+In fact, this is one of the major benefits of mixed models over repeated-measures ANOVAs: the same model, fit to the same dataset, can include many different random effects. 
+
+## Random slopes: accounting for nested variance in the effect of $X$ on $Y$
+
+Random intercepts account for subject-level variance, e.g., the average reaction time of a subject. But there might be another kind of nested variability in our dataset: different subjects may vary in their effect of sleep deprivation on reaction time. This is actually not unreasonable to assume. We've all met people who can function perfectly well on 2-3 hours of sleep, while others (like myself) become a kind of [zombie](https://en.wikipedia.org/wiki/Philosophical_zombie).
+
+We can actually visualize this variability by drawing separate best-fit lines for each subject^[Note that this plot will also draw different **intercepts** for each subject]. The graph will be kind of messy, but hopefully it illustrates the point that each subject shows a different effect of `Days` on `Reaction`. Some subjects exhibit a steep, positive slope: they're having a hard time adjusting to the lack of sleep. Other subjects exhibit milder slopes: they're more resilient. And one subject appears to have a slightly negative slope: somehow, they're getting faster with each day of sleep deprivation. See also [this website](http://mfviz.com/hierarchical-models/) for a nicer illustration of group-level variability in slope. 
+
+```{r}
+sleepstudy %>%
+  ggplot(aes(x = Days,
+             y = Reaction,
+             color = Subject)) +
+  # geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "RT over successive days") +
+  theme_minimal()
+```
+
+If our ultimate goal is to come up with a coefficient estimate for the effect of `Days`, we need to account for the fact that not all subjects show this effect to equal degrees. By partialing out subject-level variance in this effect, we can actually obtain a better estimate, which is less biased by particular subjects.
+
+The syntax for specifying a random slope (and random intercept) looks like this:
+
+`Reaction ~ Days + (1 + Days | Subject)`
+
+As above, we're accounting for subject-level variance in `Reaction`, but now, we're also accounting for subject-level variance in the effect of `Days` on `Reaction`.
+
+
+## Building and interpreting a model
+
+Now we can actually construct our first linear mixed effects model. Let's construct the full model specified above^[I'm adding a parameter `REML = FALSE`, which specifies whether to use the [restricted maximum likelihood estimator](https://en.wikipedia.org/wiki/Restricted_maximum_likelihood) instead of the log-likelihood estimator. We want the latter in this case, to facilitate model comparison. Note that if you do run `lmer` with `REML = TRUE` and use this model in a model comparison, R will actually just rebuild the model with `REML = FALSE` anyway.]:
+
+```{r}
+model_full = lmer(data = sleepstudy,
+                  Reaction ~ Days + (1 + Days | Subject),
+                  REML = FALSE)
+```
+
+As with a normal `lm` model object, we can view the output using `summary`:
+
+```{r}
+summary(model_full)
+```
+
+This looks pretty similar to the summary of an `lm` object. We see an estimate for our intercept, and a coefficient estimate for `Days`. 
+
+One difference you might notice is that, by default, this summary doesn't tell us anything about the *p-value* associated with this coefficient. This is an intentional design decision by the authors of `lme4`, and has to do with the way `lme4` calculates its t- and F-statistics^[Douglas Bates describes it much better than I can [here](https://stat.ethz.ch/pipermail/r-help/2006-May/094765.html), but the basic idea is that p-values are normally calculated by looking up the t-statistics for a parameter in a t-distribution with the appropriate degrees of freedom; this isn't really sensible for mixed models, in which the t-/F-statistics are calculated using a fixed denominator based on the overall model specifications.]. If you really want to estimate p-values for each coefficient, you can import the package `lmerTest`, and rerun the model.
+
+However, this isn't really standard practice where mixed models are concerned. Rather, the standard approach for mixed models is to use **model comparison**. 
+
+### Model comparison: Background
+
+The core idea behind the model comparison approach is to compare the **explanatory power** of two or more models, with the goal of identifying the model that best explains variance in $Y$. Of course, a model with more parameters will *always* explain more variance than a model with less. That is, if $N$ is the number of observations and $k$ is the number of parameters, the model will necessarily improve its predictions as $k$ approaches $N$. This can result in **overfitting**: a model whose parameters are too tuned to the variance specific to a particular dataset, and thus exhibits poor generalizability across datasets. So reducing variance in $Y$ isn't our only goal: we also want a **parsimonious** model.
+
+Theoretically, you can compare any two models. Here, we'll be comparing **nested** models fit to the same data, in which only a single parameter differs, e.g., $M_{k}$ and $M_{k-1}$. This allows us to infer the explanatory power of the parameter added in the full model $M_{k}$: if such a parameter substantially improves the model by some measure of model fit, we can infer that this parameter explains variance in $Y$. 
+
+There are a number of different model comparison methods, each designed with the twin goals of:
+
+1) Comparing the amount of *variance* explained by $M_{k}$ and $M_{k-1}$. 
+2) Enforcing model parsimony; all else being equal, we prefer a simpler model (e.g., $M_{k-1}$) over a model with more parameters ($M_{k}$).  
+
+We'll be focusing on something called the **likelihood ratio test**^[Other well-known approaches include [AIC](https://en.wikipedia.org/wiki/Akaike_information_criterion) and [BIC](https://en.wikipedia.org/wiki/Bayesian_information_criterion), both of which also involve calculating the likelihood of a model.]. 
+
+#### Details on likelihood ratio tests
+
+The **likelihood** of a model, $L(M_{k})$, is a way of quantifying how well a model fits the data; it's formally equivalent to the probability of our data, given the model, $p(Y | M_{k})$^[If you're interested in how likelihoods are actually calculated, there are a number of other great resources for reading about it  [here](https://towardsdatascience.com/a-gentle-introduction-to-maximum-likelihood-estimation-9fbff27ea12f), [here](https://en.wikipedia.org/wiki/Likelihood_function#Likelihood_ratio_and_relative_likelihood), [here](https://en.wikipedia.org/wiki/Maximum_likelihood_estimation), and [pg. 133, here](http://faculty.marshall.usc.edu/gareth-james/ISL/ISLR%20Seventh%20Printing.pdf). [MLE](https://en.wikipedia.org/wiki/Maximum_likelihood_estimation) is also the optimization procedure used to estimate coefficients in many algorithms.]. That is, what's the probability that a given model "created" our observed data? 
+
+A likelihood ratio test thus compares the likelihoods of two different models, e.g., $L(M_{k})$ and $L(M_{k-1})$. Formally, this is expressed as follows:
+
+$LR = -2 * ln(\frac{L(M_{k-1})}{L(M_{k})})$
+
+Let's work through this formula piece by piece. Better models should have higher likelihoods; thus, the better our full model is than our reduced model, the smaller the value expressed by $\frac{L(M_{k-1})}{L(M_{k})}$ should be. Taking the **log** of this value will thus result in more *negative* values for smaller values. And finally, we multiply this value by $-2$. Putting it all together: smaller absolute values for the ratio between our full and reduced model (i.e., a higher likelihood for our full model than reduced model) lead to larger likelihood ratios. This is illustrated below:
+
+```{r}
+inner_ratios = seq(.01, 1, by=.001)
+log_ratios = log(inner_ratios)
+likelihood_ratio = -2 * log_ratios
+
+df_loglik_example = data.frame(ir = inner_ratios,
+                               lr = log_ratios,
+                               ll = likelihood_ratio)
+
+df_loglik_example %>%
+  ggplot(aes(x = inner_ratios,
+             y = ll)) + 
+  geom_point() +
+  labs(title = "Log(ratio) by ratio",
+       x = "L(reduced)/L(full)",
+       y = "Likelihood ratio (LR)") +
+  theme_minimal()
+```
+
+As the raw ratio approaches 1, our likelihood ratio approaches 0; i.e., there's not much of a difference between our models. And as our raw ratio approaches 0, our likelihood ratio gets larger and larger.
+
+Note that this equation is often simplified into a comparison of the **log likelihoods** of our two models^[This is also handy, because log likelihood is what's usually used in MLE, simply because minimizing the log likelihood is an easier cost function to optimize than maximizing the raw likelihood]:
+
+$LR = -2 * (LogLikelihood(M_{k-1})) - LogLikelihood(L(M_{k})))$
+
+At this point, you might be wondering: what can I do with this likelihood ratio ($LR$)? As we saw, a larger $LR$ means that our full model is better than our reduced model. But how do we decide *how* much better? For example, how can we decide what's a *significant* difference between our models?
+
+It turns out that there's a formal proof called [Wilks' Theorem](https://en.wikipedia.org/wiki/Wilks%27_theorem), which states that as our sample size approaches infinity, the distribution of our log-likelihood ratios approximates the well-known [chi-squared distribution](https://en.wikipedia.org/wiki/Chi-squared_distribution)^[Though see [here](https://en.wikipedia.org/wiki/Wilks%27_theorem#Invalid_for_random_or_mixed_effects_models) for a brief discussion of when this assumption doesn't hold.]. Under this assumption, we can thus obtain a p-value for our model by looking up this $LR$ in the appropriate chi-squared distribution, i.e., the distribution with the corresponding **degrees of freedom** ($DF$). Here, $DF$ is the *difference* in degrees of freedom between our models. Often this corresponds to the difference in the number of parameters between our full model and reduced model; if there's only one parameter added to our full model, then $DF = 1$^[Again, this gets complicated (or less intuitive) when you add more complex parameters, e.g., a categorical variable with four levels.]. 
+
+Recall that the same chi-squared statistic will have different p-values depending on the $DF$. Roughly, the higher your $DF$, the more likely your chi-squared statistic is to appear in the corresponding null distribution, thus resulting in a higher p-value (i.e., less significant result). For exampl,e a chi-squared value of 4 is relatively unlikely (low p-value) when $DF = 1$, but is considerably more likely when $DF = 5$. 
+
+```{r}
+df_chi = data.frame(
+  "df 1" = rchisq(1000, 1),
+  # "df 2" = rchisq(1000, 2),
+  # "df 3" = rchisq(1000, 3),
+  # "df 4" = rchisq(1000, 4),
+  "df 5" = rchisq(1000, 5)
+) %>%
+  gather()
+
+df_chi$DF = df_chi$key
+
+df_chi %>%
+  ggplot(aes(x = value,
+             fill = DF)) +
+  geom_density(alpha = .4) +
+  labs(title = "Null chi-squared distributions for varying DF",
+       x = "Chi-squared statistic") +
+  theme_minimal()
+
+```
+
+Assuming that each of our simulated model comparisons earlier differed only in one parameter, we can obtain p-values for each of the $LR$ values by looking up that value in the corresponding chi-squared distribution. Below is a visualization of the **p-values** for a set of **log likelihood ratios** (the dotted line represents the typical $p < .05$ significance threshold): 
+
+```{r}
+# Obtain p-value by looking up actual value in a chi-squared distribution, where DF = 1
+df_loglik_example$p1 = 1 - pchisq(df_loglik_example$ll, 1)
+
+df_loglik_example %>%
+  ggplot(aes(x = ll,
+             y = p1)) + 
+  geom_point() +
+  labs(title = "P-values of different log-likelihood ratios (DF = 1)",
+       x = "Likelihood ratio (LR)",
+       y = "p-value (assuming DF=1)") +
+  geom_hline(yintercept = .05, linetype = "dotted") +
+  theme_minimal()
+```
+
+As you'd expect, the p-values get smaller (more significant) as our likelihood ratio increases. On top of this plot, we can also look at the distribution of p-values for the **same likelihood ratios**, but with different degrees of freedom; the black line corresponds to $DF = 1$, and the red line corresponds to $DF = 2$: 
+
+```{r}
+df_loglik_example$p2 = 1 - pchisq(df_loglik_example$ll, 2)
+
+df_loglik_example %>%
+  ggplot(aes(x = ll,
+             y = p1)) + 
+  geom_point() +
+  geom_point(aes(x = ll, y = p2), color = "red") +
+  labs(title = "P-values of different log-likelihood ratios (DF = 1, 2)",
+       x = "Likelihood ratio (LR)",
+       y = "p-value") +
+  geom_hline(yintercept = .05, linetype = "dotted") +
+  theme_minimal()
+```
+
+Importantly, the same $LR$ value is associated with a different p-value as a function of the $DF$.
+
+### Model comparison: Getting to the point
+
+Earlier, we built a model called `model_full`, which looked like this: `Reaction ~ Days + (1 + Days | Subject)`. Now our question is: is the **fixed effect** of `Days` significant?
+
+To answer this question, we can compare `model_full` to a model omitting the fixed effect of `Days`. Fortunately, R wraps all the complicated likelihood ratio test calculations into a single, convenient function call: `anova({model_1}, {model_2})`. 
+
+First, let's build our reduced model, omitting the effect of `Days`. This model doesn't include any fixed effects; it's only modeling by-subject variability in `Reaction` (the random intercept for `Subject`), as well as by-subject variability in the effect of `Days` on `Reaction`. In other words, it *only* contains random effects.
+
+```{r}
+model_reduced = lmer(data = sleepstudy,
+                  Reaction ~ (1 + Days | Subject),
+                  REML = FALSE)
+```
+
+The reduced model will attempt to capture all the variance in $Y$ that's accounted for by these random effects. Now we can compare our full model to this reduced model using the `anova` command:
+
+```{r}
+comparison = anova(model_full, model_reduced)
+comparison
+
+chisq = round(comparison$Chisq[2], 2)
+df = comparison$`Chi Df`[2]
+p = comparison$`Pr(>Chisq)`[2]
+
+```
+
+There's a fair amount of output here. At the top we see the formulas for the two models printed out, just in case we forgot what we were comparing. We also see a bunch of labeled columns. Let's focus on a few of these columns:
+
+- **`logLik`**: this column refers to the log-likelihood values for each of our models, respectively.  Note that `model_reduced` has a more negative value (indicating a lower likelihood) than `model_full`. Our likelihood ratio can be computed as follows: $LR = -2 * (LL_{reduced} - LL_{full})$.  
+- **`Chisq`**: this is the chi-squared statistic we'll be looking up to obtain our p-value. Note that this is identical to the likelihood ratio $LR$.  
+- **`DF`**: this is the difference in degrees of freedom between our models. `model_full` only adds one parameter, so as expected, $DF = 1$.  
+- **`Pr(>Chisq)`**: this is the probability of obtaining a chi-squared statistic that high under the null hypothesis, i.e., our **p-value**. 
+
+The p-value indicates this difference in model likelihoods is pretty significant. In other words: **adding a fixed effect of `Days` significantly increases the explanatory power of our model**. 
+
+If you wanted to report this result in a paper, you'd write something like this:
+
+> A model including a fixed effect of Days, as well as by-subject random slopes for the effect of Days (and by-subject random intercepts), explained significantly more variance than a reduced model omitting only the fixed effect of Days $[\chi^{2}$(`r df`) = `r chisq`, $p$ = `r p`$]$.
+
+Note that this model comparison doesn't directly tell us about the **direction** of the effect of `Days`. For that, we'd need to inspect the coefficient as usual:
+
+```{r}
+fixef(model_full)["Days"]
+```
+
+# Interim summary
+
+So far, this walkthrough has attempted to address the following questions:
+
+1) Why use mixed models? (Answer: to address non-independence in your dataset.)  
+2) How do you run a mixed model? (Answer: see above.)  
+3) What's the standard practice for interpreting your effects in a mixed model? (Answer: likelihood ratio test^[Again, there are alternatives, such as **AIC** or **BIC**. R's `anova` function conveniently gives us these values as well.].) 
+
+Below, I'll briefly address a few other "best practices" that I'm aware of in the domain of mixed models. I'll also describe in a bit more detail what it means to calculate a **random effect**. 
+
+# Best practices
+
+A few best practices and ways of dealing with common questions have emerged over the years. I'll try to address some of these common questions below. Bear in mind that there's not necessarily a single "recipe" to follow when building mixed models (or, indeed, any statistical model); any decision you make has trade-offs. That said, it's important to understand what these trade-offs are so that you make informed decisions.
+
+## Which effects are fixed, and which are random?
+
+Sometimes it's very straightforward to determine which variables ought to be entered as **random** vs. **fixed** effects. For example, a variable like `Subject ID` pretty intuitively maps onto the notion of a random effect, as does something like `Item` or `School District`. But this distinction isn't always so clear, especially in observational analyses involving many variables you might want to model and control for.
+
+Unfortunately, as [Andrew Gelman has pointed out on his blog](https://statmodeling.stat.columbia.edu/2005/01/25/why_i_dont_use/), there's not even a clear consensus on the distinction between random and fixed effects, which is why he prefers not to use those terms at all. Sometimes the distinction is defined in terms of "things you care about modeling directly" (fixed) vs. "effects related to the *population* you're interested in modeling" (random), sometimes it's defined in terms of whether a sample exhausts a population (fixed) vs. samples only negligibly from that population (random), and sometimes its defined in terms of whether the coefficients are calculated using maximum likelihood estimation (fixed) vs. shrinkage (random). As Gelman notes: not only are these definitions different, they're not even at at the same level of analysis. 
+
+Here are some rules of thumb I use when I encounter this question in my own research; these are by no means the "best" heuristics, so I welcome any comments or criticism about them.
+
+**Should I include variable $X$ as a random effect or not?** If $X$ demonstrates nested structure in my dataset, then I include it. It seems preferable to me to try to account for potential nested variance, and perhaps be overly cautious, than to miss something important--i.e., I try to keep it maximal. That said, you can also use model comparison approaches to determine your random effects structure, as [Bates et al (2015)](https://arxiv.org/pdf/1506.04967.pdf) demonstrate.
+
+**Should I enter variable $X$ as a random or fixed effect?** This is a little trickier. For me, it comes down to my *a priori* assumptions about the relationship between this variable and $Y$. If I think that $X$ covaries in important, systematic ways with $Y$, then I enter it as a fixed effect. If I think that each cluster of nested structure in $X$ is essentially random with respect to $Y$--that is, each group in $X$ varies, but not systematically, such that we can assume each group has been pulled from some overarching distribution--then I enter it as a random effect. This latter decision actually mirrors how random effects are computed via **partial pooling** (see the section on "Computing random effects" below).
+
+## How do I know how many random effects to include? 
+
+Should you include random effects for both `Item` and `Subject ID`? Further, should you model them as random intercepts, random slopes, or both?
+
+Standard advice, as described in a famous paper by [Barr et al (2013)](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3881361/), is to **"keep it maximal"**. Using simulation-based analyses, the authors demonstrate that the best way to minimize false positive rates and improve generalizability is to begin with a maximally specified model: include both *slopes* and *intercepts* for all random factors. This can sometimes result in pretty complicated models, such as the one below:
+
+$Y \sim X1 * X2 + (X1 * X2 | Subject) + (X1 * X2 | Item) + (X1 * X2 | Group)$
+
+This model specification is essentially saying: calculate by-subject, by-item, and by-group random slopes for the effect of $X1$, $X2$, and their interaction, as well as random intercepts for all those variables; then, go ahead and calculate the fixed effects.
+
+Sometimes this best practice isn't always possible. For example, a common issue is that your model weren't converge. Given a warning about convergence, there are a few approaches you can take:
+
+1) Rescale and center continuous parameters. Differences in the scales of your parameters can lead to issues estimating standard deviations of your fixed effects.  
+2) Use a different optimizer. For example, I sometimes use the **bobyqa** optimizer, using the following syntax: `lmerControl(optimizer="bobyqa")`.  
+3) Simplify your model.
+
+If (1) and (2) both fail, then you can take a principled approach to (3). You can use the same model comparison procedure described earlier in the tutorial to identify random factors that actually explain substantial amounts of variance in your model; [Bates et al (2015): Parsimonious mixed models](https://arxiv.org/pdf/1506.04967.pdf) argue that this should actually be standard practice in determining your model specification.
+
+
+# How are estimates for random factors computed?
+
+Earlier, I mentioned that estimates for random factors are calculated using something called **shrinkage** (sometimes called **partial pooling** or **regularization**). What does this mean?
+
+*Note*: The descriptions below draw heavily from the following sources:
+
+- [Ed Vul's slides for Psych 201B at UCSD](http://vulstats.ucsd.edu/).  
+- [This description of shrinkage in mixed models](https://m-clark.github.io/posts/2019-05-14-shrinkage-in-mixed-models/)
+
+## Theoretical background 
+
+The short definition is that when we compute our estimates for each group (e.g., intercept and slope), we assume that they are pulled from a **normal distribution** around the overall mean for those values across all groups. Hence the term "shrinkage": rather than being allowed to vary freely, the estimates are constrained ("shrunk") in terms of the values they can take on^[This is why "shrinkage" is also sometimes called "regularization".  [Regularization](https://en.wikipedia.org/wiki/Regularization_(mathematics)) is an approach to reducing the problem of *overfitting*. Well-known regularization algorithms for regression are **ridge** and **LASSO**, which place constraints on the values your coefficients can adopt, and penalize overly large coefficients (or having too many large coefficients).]
+
+We can compare this to two extreme cases, focusing specifically on random intercepts. Let's first consider the case in which we have *no* random factors--i.e., typical OLS regression. In this case, we're not accounting for any nested structure, and we just compute a single intercept value for the entire dataset. This intercept is "pooled" over all observations:
+
+$Y \sim \beta_{0} + \beta_{1}X + \epsilon$
+
+We can also consider the extreme case in which we compute a different intercept for each group (e.g., each subject), and this intercept is allowed to vary freely for each participant $i$:
+
+$Y \sim \beta_{0i} + \beta_{1}X + \epsilon$
+
+In this case, any given $\beta_{0i}$ will be equivalent that participant's mean $Y$ (e.g., mean `Reaction`). 
+
+Finally, we can consider the case of shrinkage: we allow each person's intercept to vary, but we model these intercepts as normally distributed around the group mean. 
+
+## Example
+
+It's helpful to illustrate this procedure with an example. Let's return to our `sleepstudy` data from earlier, and consider how random intercepts for each `Subject` are computed in light of what we now know about shrinkage.
+
+First, let's compute the mean `Reaction` for each subject. This is equivalent to allowing their intercepts to vary freely. We also might want to center this variable around the group mean:
+
+```{r}
+group_mean = mean(sleepstudy$Reaction)
+
+by_subject = sleepstudy %>%
+  group_by(Subject) %>%
+  summarise(mean_rt = mean(Reaction)) %>%
+  mutate(mean_rt_centered = mean_rt - group_mean)
+
+by_subject %>%
+  ggplot(aes(x = mean_rt_centered)) +
+  geom_histogram(bins = 20) +
+  labs(title = "Mean RT by subject (Centered)",
+       x = "Mean RT (Centered)") +
+  scale_x_continuous(limits = c(-100, 100)) +
+  theme_minimal()
+```
+
+Now let's extract the random intercepts from a model only including our random intercepts:
+
+```{r}
+model_null = lmer(data = sleepstudy,
+                  Reaction ~ (1 | Subject),
+                  REML = FALSE)
+by_subject$random_intercepts = ranef(model_null)$Subject$`(Intercept)`
+
+by_subject %>%
+  ggplot(aes(x = random_intercepts)) +
+  geom_histogram(bins = 20) +
+  labs(title = "Random intercepts for each subject",
+       x = "Random intercept") +
+  scale_x_continuous(limits = c(-100, 100)) +
+  theme_minimal()
+```
+
+Note that this plot looks very similar to the one showing each subject's mean RT. This is exactly what we'd expect. Recall that the intercepts are meant to account for subject-level variance in `Reaction`; each intercept thus roughly corresponds to that subject's mean `Reaction`.
+
+**However**, the random intercepts are also subject to shrinkage, meaning they're assumed to be drawn from a normal distribution around the group mean. We can illustrate exactly what this looks like by plotting each subjects mean `Reaction` against that subject's random intercept; furthermore, we can *shade* each point in terms of the *difference* between the subject's random intercept and their mean RT:
+
+
+```{r}
+by_subject$difference = abs(by_subject$random_intercepts - by_subject$mean_rt_centered)
+
+# This shows:
+# 1) perfectly linear (as you'd expect)
+# 2) slight shrinkage (max/min real RT are slightly larger magnitude than random intercept estimates)
+# 3) the differences between real RT and random intercept grow larger as you approach the ends of the distribution.
+by_subject %>%
+  ggplot(aes(x = mean_rt_centered,
+             y = random_intercepts,
+             color = difference)) +
+  geom_point() +
+  scale_x_continuous(limits = c(-100, 100)) +
+  scale_y_continuous(limits = c(-100, 100)) +
+  labs(title = "By-subject intercepts and by-subject mean RTs",
+       x = "By-subject mean RT (centered)",
+       y = "Random intercept") +
+  theme_minimal()
+
+
+```
+
+This visualization should illustrate a few points:
+
+1) First, the relationship is perfectly linear.  
+2) Second, there's evidence of slight shrinkage towards the mean. That is, for any given data-point, the values on the x-axis tend to be somewhat larger than those on the y-axis.  
+3) The point made in (2) is *especially* true around the margins of the distribution, as evidenced by the shading. That is, points that are extreme at either end (i.e., subjects that are either very fast or very slow on average) are the most subject to **shrinkage**.  
+
+For a more detailed description (and animated visualization!), I recommend checking out this [blog post](https://m-clark.github.io/posts/2019-05-14-shrinkage-in-mixed-models/) on shrinkage in mixed models.
+
+
+# Contact
+
+If you have any questions, comments, or criticisms about anything in this tutorial, don't hesitate to contact me by email: the username is "sttrott"," at *ucsd.edu*. I'll likely augment this tutorial with more details (or pointers to other resources) over time.
+
+# References
+
+Barr, D. J., Levy, R., Scheepers, C., & Tily, H. J. (2013). Random effects structure for confirmatory hypothesis testing: Keep it maximal. Journal of memory and language, 68(3), 255-278. [Link](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3881361/)
+
+Bates, D., Mächler, M., Bolker, B., & Walker, S. (2014). Fitting linear mixed-effects models using lme4. arXiv preprint arXiv:1406.5823. [Link](https://arxiv.org/pdf/1406.5823.pdf)
+
+Bates, D., Kliegl, R., Vasishth, S., & Baayen, H. (2015). Parsimonious mixed models. arXiv preprint arXiv:1506.04967. [Link](https://arxiv.org/pdf/1506.04967.pdf)
+
+Clark (2019, May 14). Michael Clark: Shrinkage in Mixed Effects Models. Retrieved from https://m-clark.github.io/posts/2019-05-14-shrinkage-in-mixed-models/ [Link](https://m-clark.github.io/posts/2019-05-14-shrinkage-in-mixed-models/)
+
+Freeman, M. Hierarchical Models. [Link](http://mfviz.com/hierarchical-models/)
+
+Piccininni, P. Linear mixed effects models. [Link](https://pagepiccinini.com/r-course/lesson-6-part-1-linear-mixed-effects-models/) 
+
+Winter, B. (2013). Linear models and linear mixed effects models in R with linguistic applications. arXiv preprint arXiv:1308.5499. [Link](https://arxiv.org/ftp/arxiv/papers/1308/1308.5499.pdf)
+
+# Citation
+
+For citation, please cite as:
+
+Trott, S. (2019). Mixed models in R. Retrieved from https://seantrott.github.io/mixed_models_R/.
+
+# Footnotes

@@ -66,7 +66,9 @@ This is a useful assumption, and in many cases, is perfectly acceptable.
 
 ## When the independence assumption is met
 
-When is independence fair to assume? Broadly speaking: your data points are independent if you've ruled out the possibility of some nested causal process generating multiple observations in your dataset. This causal process could be a *person* (e.g., the same participant contributing multiple data points), an *item* (e.g., the same item being answered by different participants, where the item itself isn't your variable of interest), or in certain contexts, even an *institution* (e.g., multiple participants coming from the same school). 
+When is independence fair to assume? 
+
+Broadly speaking: your data points are independent if you've ruled out the possibility of some nested causal process generating multiple observations in your dataset. This causal process could be a *person* (e.g., the same participant contributing multiple data points), an *item* (e.g., the same item being answered by different participants, where the item itself isn't your variable of interest), or in certain contexts, even an *institution* (e.g., multiple participants coming from the same school). 
 
 **Example 1**: You want to know whether a new pharmaceutical drug increases self-reported happiness. You randomly assign people to take the drug vs. some placebo, and 1 month later, each participant answers a single question (e.g., "How happy are you (1-7)?"). You then use a t-test or OLS regression to compare the distribution of people assigned to the treatment group to the distribution of people assigned to the placebo group. Here, each participant contributed exactly 1 data point, so it's pretty reasonable to assume each data point is independent.
 
@@ -74,7 +76,7 @@ When is independence fair to assume? Broadly speaking: your data points are inde
 
 Examples 1-2 seem to meet the independence assumption^[Of course, one can imagine circumstances under which we'd be worried that this assumption is violated; e.g., maybe the participants assigned to take the drug happened to come from one part of the country, and the participants assigned to take the placebo happened to come from another. If your assignment procedure is truly randomized, this shouldn't be the case, but nonetheless: it's always important to watch out for signs of non-independence.]. 
 
-When this assumption is met, you can analyze your data with something like OLS regression; an example using simulated data is shown below. (Note that for the remainder of the tutorial, analyses will be discussed from the perspective of regression; [this](https://lindeloev.github.io/tests-as-linear/) is a useful resource explaining how many common statistical tests actually reduce to linear regression.) 
+When this assumption is met, you can analyze your data with something like OLS regression; an example using simulated data is shown below.
 
 ### Simulation and analysis
 
@@ -224,10 +226,11 @@ But now we recall that there are only `r length(unique(sleepstudy$Subject))` sub
 
 ```{r}
 sleepstudy %>%
-  ggplot(aes(x = Subject,
+  ggplot(aes(x = reorder(Subject, Reaction),
              y = Reaction)) +
   geom_boxplot() +
-  labs(title = "Subject-level variance in RT") +
+  labs(title = "Subject-level variance in RT",
+       x = "Subject") +
   theme_minimal()
 ```
 
@@ -245,7 +248,7 @@ Below I'll walk through both in turn.
 
 ## Random intercepts: accounting for nested variance in $Y$
 
-Different people probably differ in their average reaction time, *regardless* of how sleep-deprived they are. Rather than ignoring this individual variation, we can actually incorporate it into our model as something called a **random effect**^[You might wonder: why not just include subject-level variance as a fixed effect? There's always some debate about which variables to include as **fixed** vs. **random** effects in your model, and the answer will depend multiple things. For example, what sorts of things are you actually interested in modeling theoretically? And what sorts of things do you have reason to believe vary systematically with $Y$ as opposed to randomly? I'll go into more detail on this later in the tutorial, but the quick answer is that adding something as a random effect means that its values (e.g., its intercept) are subject to **partial pooling**, which is essentially a form of regularization. This places useful constraints on the range of values that these intercepts and slopes can take.] Recall that the model from earlier looks like this:
+Different people probably differ in their average reaction time, *regardless* of how sleep-deprived they are. Rather than ignoring this individual variation, we can actually incorporate it into our model as something called a **random effect**^[You might wonder: why not just include subject-level variance as a fixed effect? There's always some debate about which variables to include as **fixed** vs. **random** effects in your model, and the answer will depend multiple things. For example, what sorts of things are you actually interested in modeling theoretically? And what sorts of things do you have reason to believe vary systematically with $Y$ as opposed to randomly? I'll go into more detail on this later in the tutorial, but the quick answer is that adding something as a random effect means that its values (e.g., its intercept) are subject to **partial pooling**, which is essentially a form of regularization. This places useful constraints on the range of values that these intercepts and slopes can take.] Recall that the model from earlier looks like this in R:
 
 `Reaction ~ Days`
 
@@ -273,7 +276,7 @@ sleepstudy %>%
              y = Reaction,
              color = Subject)) +
   # geom_point() +
-  geom_smooth(method = "lm") +
+  geom_smooth(method = "lm", se = FALSE) +
   labs(title = "RT over successive days") +
   theme_minimal()
 ```
@@ -305,7 +308,7 @@ summary(model_full)
 
 This looks pretty similar to the summary of an `lm` object. We see an estimate for our intercept, and a coefficient estimate for `Days`. 
 
-One difference you might notice is that, by default, this summary doesn't tell us anything about the *p-value* associated with this coefficient. This is an intentional design decision by the authors of `lme4`, and has to do with the way `lme4` calculates its t- and F-statistics^[Douglas Bates describes it much better than I can [here](https://stat.ethz.ch/pipermail/r-help/2006-May/094765.html), but the basic idea is that p-values are normally calculated by looking up the t-statistics for a parameter in a t-distribution with the appropriate degrees of freedom; this isn't really sensible for mixed models, in which the t-/F-statistics are calculated using a fixed denominator based on the overall model specifications.]. If you really want to estimate p-values for each coefficient, you can import the package `lmerTest`, and rerun the model.
+One difference you might notice is that, by default, this summary doesn't tell us anything about the *p-value* associated with this coefficient. This is an intentional design decision by the authors of `lme4`, and has to do with the way `lme4` calculates its t- and F-statistics^[Douglas Bates describes it much better than I can [here](https://stat.ethz.ch/pipermail/r-help/2006-May/094765.html), but the basic idea is that p-values for model parameters are normally calculated by looking up the t-statistics for a parameter in a t-distribution with the appropriate degrees of freedom; this isn't really sensible for mixed models, in which the t-/F-statistics are calculated using a fixed denominator based on the overall model specifications.]. If you really want to estimate p-values for each coefficient, you can import the package `lmerTest`, and rerun the model.
 
 However, this isn't really standard practice where mixed models are concerned. Rather, the standard approach for mixed models is to use **model comparison**. 
 
@@ -320,110 +323,12 @@ There are a number of different model comparison methods, each designed with the
 1) Comparing the amount of *variance* explained by $M_{k}$ and $M_{k-1}$. 
 2) Enforcing model parsimony; all else being equal, we prefer a simpler model (e.g., $M_{k-1}$) over a model with more parameters ($M_{k}$).  
 
-We'll be focusing on something called the **likelihood ratio test**^[Other well-known approaches include [AIC](https://en.wikipedia.org/wiki/Akaike_information_criterion) and [BIC](https://en.wikipedia.org/wiki/Bayesian_information_criterion), both of which also involve calculating the likelihood of a model.]. 
+We'll be using something called the **likelihood ratio test**^[Other well-known approaches include [AIC](https://en.wikipedia.org/wiki/Akaike_information_criterion) and [BIC](https://en.wikipedia.org/wiki/Bayesian_information_criterion), both of which also involve calculating the likelihood of a model.]. For more details on likelihood ratio tests, see my [tutorial on model comparison strategies more generally](https://seantrott.github.io/model_comparison/).
 
-#### Details on likelihood ratio tests
 
-The **likelihood** of a model, $L(M_{k})$, is a way of quantifying how well a model fits the data; it's formally equivalent to the probability of our data, given the model, $p(Y | M_{k})$^[If you're interested in how likelihoods are actually calculated, there are a number of other great resources for reading about it  [here](https://towardsdatascience.com/a-gentle-introduction-to-maximum-likelihood-estimation-9fbff27ea12f), [here](https://en.wikipedia.org/wiki/Likelihood_function#Likelihood_ratio_and_relative_likelihood), [here](https://en.wikipedia.org/wiki/Maximum_likelihood_estimation), and [pg. 133, here](http://faculty.marshall.usc.edu/gareth-james/ISL/ISLR%20Seventh%20Printing.pdf). [MLE](https://en.wikipedia.org/wiki/Maximum_likelihood_estimation) is also the optimization procedure used to estimate coefficients in many algorithms.]. That is, what's the probability that a given model "created" our observed data? 
+### Model comparison: Implementation
 
-A likelihood ratio test thus compares the likelihoods of two different models, e.g., $L(M_{k})$ and $L(M_{k-1})$. Formally, this is expressed as follows:
-
-$LR = -2 * ln(\frac{L(M_{k-1})}{L(M_{k})})$
-
-Let's work through this formula piece by piece. Better models should have higher likelihoods; thus, the better our full model is than our reduced model, the smaller the value expressed by $\frac{L(M_{k-1})}{L(M_{k})}$ should be. Taking the **log** of this value will thus result in more *negative* values for smaller values. And finally, we multiply this value by $-2$. Putting it all together: smaller absolute values for the ratio between our full and reduced model (i.e., a higher likelihood for our full model than reduced model) lead to larger likelihood ratios. This is illustrated below:
-
-```{r}
-inner_ratios = seq(.01, 1, by=.001)
-log_ratios = log(inner_ratios)
-likelihood_ratio = -2 * log_ratios
-
-df_loglik_example = data.frame(ir = inner_ratios,
-                               lr = log_ratios,
-                               ll = likelihood_ratio)
-
-df_loglik_example %>%
-  ggplot(aes(x = inner_ratios,
-             y = ll)) + 
-  geom_point() +
-  labs(title = "Log(ratio) by ratio",
-       x = "L(reduced)/L(full)",
-       y = "Likelihood ratio (LR)") +
-  theme_minimal()
-```
-
-As the raw ratio approaches 1, our likelihood ratio approaches 0; i.e., there's not much of a difference between our models. And as our raw ratio approaches 0, our likelihood ratio gets larger and larger.
-
-Note that this equation is often simplified into a comparison of the **log likelihoods** of our two models^[This is also handy, because log likelihood is what's usually used in MLE, simply because minimizing the log likelihood is an easier cost function to optimize than maximizing the raw likelihood]:
-
-$LR = -2 * (LogLikelihood(M_{k-1})) - LogLikelihood(L(M_{k})))$
-
-At this point, you might be wondering: what can I do with this likelihood ratio ($LR$)? As we saw, a larger $LR$ means that our full model is better than our reduced model. But how do we decide *how* much better? For example, how can we decide what's a *significant* difference between our models?
-
-It turns out that there's a formal proof called [Wilks' Theorem](https://en.wikipedia.org/wiki/Wilks%27_theorem), which states that as our sample size approaches infinity, the distribution of our log-likelihood ratios approximates the well-known [chi-squared distribution](https://en.wikipedia.org/wiki/Chi-squared_distribution)^[Though see [here](https://en.wikipedia.org/wiki/Wilks%27_theorem#Invalid_for_random_or_mixed_effects_models) for a brief discussion of when this assumption doesn't hold.]. Under this assumption, we can thus obtain a p-value for our model by looking up this $LR$ in the appropriate chi-squared distribution, i.e., the distribution with the corresponding **degrees of freedom** ($DF$). Here, $DF$ is the *difference* in degrees of freedom between our models. Often this corresponds to the difference in the number of parameters between our full model and reduced model; if there's only one parameter added to our full model, then $DF = 1$^[Again, this gets complicated (or less intuitive) when you add more complex parameters, e.g., a categorical variable with four levels.]. 
-
-Recall that the same chi-squared statistic will have different p-values depending on the $DF$. Roughly, the higher your $DF$, the more likely your chi-squared statistic is to appear in the corresponding null distribution, thus resulting in a higher p-value (i.e., less significant result). For exampl,e a chi-squared value of 4 is relatively unlikely (low p-value) when $DF = 1$, but is considerably more likely when $DF = 5$. 
-
-```{r}
-df_chi = data.frame(
-  "df 1" = rchisq(1000, 1),
-  # "df 2" = rchisq(1000, 2),
-  # "df 3" = rchisq(1000, 3),
-  # "df 4" = rchisq(1000, 4),
-  "df 5" = rchisq(1000, 5)
-) %>%
-  gather()
-
-df_chi$DF = df_chi$key
-
-df_chi %>%
-  ggplot(aes(x = value,
-             fill = DF)) +
-  geom_density(alpha = .4) +
-  labs(title = "Null chi-squared distributions for varying DF",
-       x = "Chi-squared statistic") +
-  theme_minimal()
-
-```
-
-Assuming that each of our simulated model comparisons earlier differed only in one parameter, we can obtain p-values for each of the $LR$ values by looking up that value in the corresponding chi-squared distribution. Below is a visualization of the **p-values** for a set of **log likelihood ratios** (the dotted line represents the typical $p < .05$ significance threshold): 
-
-```{r}
-# Obtain p-value by looking up actual value in a chi-squared distribution, where DF = 1
-df_loglik_example$p1 = 1 - pchisq(df_loglik_example$ll, 1)
-
-df_loglik_example %>%
-  ggplot(aes(x = ll,
-             y = p1)) + 
-  geom_point() +
-  labs(title = "P-values of different log-likelihood ratios (DF = 1)",
-       x = "Likelihood ratio (LR)",
-       y = "p-value (assuming DF=1)") +
-  geom_hline(yintercept = .05, linetype = "dotted") +
-  theme_minimal()
-```
-
-As you'd expect, the p-values get smaller (more significant) as our likelihood ratio increases. On top of this plot, we can also look at the distribution of p-values for the **same likelihood ratios**, but with different degrees of freedom; the black line corresponds to $DF = 1$, and the red line corresponds to $DF = 2$: 
-
-```{r}
-df_loglik_example$p2 = 1 - pchisq(df_loglik_example$ll, 2)
-
-df_loglik_example %>%
-  ggplot(aes(x = ll,
-             y = p1)) + 
-  geom_point() +
-  geom_point(aes(x = ll, y = p2), color = "red") +
-  labs(title = "P-values of different log-likelihood ratios (DF = 1, 2)",
-       x = "Likelihood ratio (LR)",
-       y = "p-value") +
-  geom_hline(yintercept = .05, linetype = "dotted") +
-  theme_minimal()
-```
-
-Importantly, the same $LR$ value is associated with a different p-value as a function of the $DF$.
-
-### Model comparison: Getting to the point
-
-Earlier, we built a model called `model_full`, which looked like this: `Reaction ~ Days + (1 + Days | Subject)`. Now our question is: is the **fixed effect** of `Days` significant?
+Earlier, we built a model called `model_full`, which looked like this: `Reaction ~ Days + (1 + Days | Subject)`. Now our question is: does the fixed effect of `Days` *explain* a significant amount of variance in `Reaction`? Another way of putting this is: does `Days` improve the **fit** of a model?
 
 To answer this question, we can compare `model_full` to a model omitting the fixed effect of `Days`. Fortunately, R wraps all the complicated likelihood ratio test calculations into a single, convenient function call: `anova({model_1}, {model_2})`. 
 
@@ -442,35 +347,43 @@ comparison = anova(model_full, model_reduced)
 comparison
 
 chisq = round(comparison$Chisq[2], 2)
-df = comparison$`Chi Df`[2]
+chisq
+df = comparison$`Df`[2]
+df
 p = comparison$`Pr(>Chisq)`[2]
+p
 
 ```
 
 There's a fair amount of output here. At the top we see the formulas for the two models printed out, just in case we forgot what we were comparing. We also see a bunch of labeled columns. Let's focus on a few of these columns:
 
 - **`logLik`**: this column refers to the log-likelihood values for each of our models, respectively.  Note that `model_reduced` has a more negative value (indicating a lower likelihood) than `model_full`. Our likelihood ratio can be computed as follows: $LR = -2 * (LL_{reduced} - LL_{full})$.  
-- **`Chisq`**: this is the chi-squared statistic we'll be looking up to obtain our p-value. Note that this is identical to the likelihood ratio $LR$.  
+- **`Chisq`**: this is the chi-squared statistic we'll be looking up to obtain our p-value. Note that this is identical to the log-likelihood ratio $LR$ (see [Wilks' Theorem](https://en.wikipedia.org/wiki/Wilks%27_theorem)).    
 - **`DF`**: this is the difference in degrees of freedom between our models. `model_full` only adds one parameter, so as expected, $DF = 1$.  
 - **`Pr(>Chisq)`**: this is the probability of obtaining a chi-squared statistic that high under the null hypothesis, i.e., our **p-value**. 
 
-The p-value indicates this difference in model likelihoods is pretty significant. In other words: **adding a fixed effect of `Days` significantly increases the explanatory power of our model**. 
+The p-value indicates this difference in model likelihoods is quite significant, i.e., this `Chisq` statistic is very unlikely under the corresponding null distribution. 
+
+In model comparison terms, we might interpret the result as follows: adding a fixed effect of `Days` significantly increases the explanatory power of our model. 
 
 If you wanted to report this result in a paper, you'd write something like this:
 
-> A model including a fixed effect of Days, as well as by-subject random slopes for the effect of Days (and by-subject random intercepts), explained significantly more variance than a reduced model omitting only the fixed effect of Days $[\chi^{2}$(`r df`) = `r chisq`, $p$ = `r p`$]$.
+> A model including a fixed effect of Days, as well as by-subject random slopes for the effect of Days (and by-subject random intercepts), explained significantly more variance than a reduced model omitting only the fixed effect of Days $[\chi^{2}$(`r df`) = `r chisq`, $p$ = `r round(p, 10)`$]$.
 
 Note that this model comparison doesn't directly tell us about the **direction** of the effect of `Days`. For that, we'd need to inspect the coefficient as usual:
 
 ```{r}
-fixef(model_full)["Days"]
+coef_days = fixef(model_full)["Days"]
+coef_days
 ```
+
+As in the OLS regression, the coefficient is positive: for every day of sleep deprivation, we expect participants' `Reaction` to slow by an average of `r round(coef_days, 2)` ms. The key difference is that this parameter estimate now accounts for nested variance in the data, i.e., individual differences in `Reaction` overall (random intercepts for each `Subject`), and individual differences in the effect of `Days` of sleep deprivation on `Reaction` (by-participant random slopes for `Reaction ~ Days`).
 
 # Interim summary
 
 So far, this walkthrough has attempted to address the following questions:
 
-1) Why use mixed models? (Answer: to address non-independence in your dataset.)  
+1) Why use mixed models? (Answer: to address non-independence in your dataset.)   
 2) How do you run a mixed model? (Answer: see above.)  
 3) What's the standard practice for interpreting your effects in a mixed model? (Answer: likelihood ratio test^[Again, there are alternatives, such as **AIC** or **BIC**. R's `anova` function conveniently gives us these values as well.].) 
 
@@ -488,7 +401,7 @@ Unfortunately, as [Andrew Gelman has pointed out on his blog](https://statmodeli
 
 Here are some rules of thumb I use when I encounter this question in my own research; these are by no means the "best" heuristics, so I welcome any comments or criticism about them.
 
-**Should I include variable $X$ as a random effect or not?** If $X$ demonstrates nested structure in my dataset, then I include it. It seems preferable to me to try to account for potential nested variance, and perhaps be overly cautious, than to miss something important--i.e., I try to keep it maximal. That said, you can also use model comparison approaches to determine your random effects structure, as [Bates et al (2015)](https://arxiv.org/pdf/1506.04967.pdf) demonstrate.
+**Should I include random factor $X$ in the model?** If $X$ demonstrates nested structure in my dataset, then I include it. It seems preferable to me to try to account for potential nested variance, and perhaps be overly cautious, than to miss something important--i.e., I try to keep it maximal. That said, you can also use model comparison approaches to determine your random effects structure, as [Bates et al (2015)](https://arxiv.org/pdf/1506.04967.pdf) demonstrate. This can be helpful for avoiding overly/unnecessarily complex random factor specifications and the dreaded convergence errors.
 
 **Should I enter variable $X$ as a random or fixed effect?** This is a little trickier. For me, it comes down to my *a priori* assumptions about the relationship between this variable and $Y$. If I think that $X$ covaries in important, systematic ways with $Y$, then I enter it as a fixed effect. If I think that each cluster of nested structure in $X$ is essentially random with respect to $Y$--that is, each group in $X$ varies, but not systematically, such that we can assume each group has been pulled from some overarching distribution--then I enter it as a random effect. This latter decision actually mirrors how random effects are computed via **partial pooling** (see the section on "Computing random effects" below).
 
@@ -500,7 +413,7 @@ Standard advice, as described in a famous paper by [Barr et al (2013)](https://w
 
 $Y \sim X1 * X2 + (X1 * X2 | Subject) + (X1 * X2 | Item) + (X1 * X2 | Group)$
 
-This model specification is essentially saying: calculate by-subject, by-item, and by-group random slopes for the effect of $X1$, $X2$, and their interaction, as well as random intercepts for all those variables; then, go ahead and calculate the fixed effects.
+This model specification is essentially saying: calculate by-subject, by-item, and by-group random slopes for the effect of $X1$, $X2$, and their interaction, as well as random intercepts for all those variables.
 
 Sometimes this best practice isn't always possible. For example, a common issue is that your model weren't converge. Given a warning about convergence, there are a few approaches you can take:
 
@@ -627,6 +540,8 @@ Bates, D., Kliegl, R., Vasishth, S., & Baayen, H. (2015). Parsimonious mixed mod
 Clark (2019, May 14). Michael Clark: Shrinkage in Mixed Effects Models. Retrieved from https://m-clark.github.io/posts/2019-05-14-shrinkage-in-mixed-models/ [Link](https://m-clark.github.io/posts/2019-05-14-shrinkage-in-mixed-models/)
 
 Freeman, M. Hierarchical Models. [Link](http://mfviz.com/hierarchical-models/)
+
+Gelman, A., & Hill, J. (2006). Data analysis using regression and multilevel/hierarchical models. Cambridge university press.
 
 Piccininni, P. Linear mixed effects models. [Link](https://pagepiccinini.com/r-course/lesson-6-part-1-linear-mixed-effects-models/) 
 
